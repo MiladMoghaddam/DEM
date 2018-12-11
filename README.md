@@ -44,7 +44,7 @@ For more information please take a look at the following paper:
 (Please cite it if you use it in your work)
 
   - M.G Moghaddam, W. Guan and C. Ababei, “Dynamic energy minimization in chip multiprocessors using deep neural 
-    network,” IEEE Trans. on Multiscale Computing Systems, 2018.
+    networks,” IEEE Trans. on Multiscale Computing Systems, 2018.
 
 ---------------------------------------------------------------------------------------------------------------
 Steps:
