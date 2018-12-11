@@ -1,0 +1,37 @@
+/home/milad/sniper/common/performance_model/dram_perf_model.o /home/milad/sniper/common/performance_model/dram_perf_model.d: $(wildcard \
+ /home/milad/sniper/common/performance_model/dram_perf_model.cc \
+ /home/milad/sniper/common/system/simulator.h \
+ /home/milad/sniper/common/misc/config.h \
+ /home/milad/sniper/common/misc/fixed_types.h \
+ /home/milad/sniper/common/system/clock_skew_minimization_object.h \
+ /home/milad/sniper/common/misc/fixed_types.h \
+ /home/milad/sniper/common/misc/subsecond_time.h \
+ /home/milad/sniper/common/misc/lock.h \
+ /home/milad/sniper/common/misc/itostr.h \
+ /home/milad/sniper/common/misc/subsecond_time_c.h \
+ /home/milad/sniper/common/misc/log.h \
+ /home/milad/sniper/common/system/cache_efficiency_tracker.h \
+ /home/milad/sniper/common/core/memory_subsystem/cache/cache_block_info.h \
+ /home/milad/sniper/common/core/memory_subsystem/cache/cache_state.h \
+ /home/milad/sniper/common/core/memory_subsystem/cache/cache_base.h \
+ /home/milad/sniper/common/performance_model/hit_where.h \
+ /home/milad/sniper/common/core/memory_subsystem/mem_component.h \
+ /home/milad/sniper/common/core/core.h \
+ /home/milad/sniper/common/misc/lock.h \
+ /home/milad/sniper/common/network/packet_type.h \
+ /home/milad/sniper/common/core/bbv_count.h \
+ /home/milad/sniper/common/misc/cpuid.h \
+ /home/milad/sniper/common/system/inst_mode.h \
+ /home/milad/sniper/common/performance_model/dram_perf_model.h \
+ /home/milad/sniper/common/performance_model/queue_model.h \
+ /home/milad/sniper/common/core/memory_subsystem/dram/dram_cntlr_interface.h \
+ /home/milad/sniper/common/core/memory_subsystem/pr_l1_pr_l2_dram_directory_msi/shmem_msg.h \
+ /home/milad/sniper/common/performance_model/dram_perf_model_constant.h \
+ /home/milad/sniper/common/performance_model/dram_perf_model_readwrite.h \
+ /home/milad/sniper/common/performance_model/dram_perf_model_normal.h \
+ /home/milad/sniper/common/misc/distribution.h \
+ /home/milad/sniper/common/misc/subsecond_time.h \
+ /home/milad/sniper/common/config/config.hpp \
+ /home/milad/sniper/common/config/key.hpp \
+ /home/milad/sniper/common/config/section.hpp \
+ /home/milad/sniper/common/config/config_exceptions.hpp)

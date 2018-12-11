@@ -1,0 +1,9 @@
+infostr = '{"intervalsize": 0, "use_mcpat": false, "num_intervals": 249, "name": "fft"}';
+palette = new Rickshaw.Color.Palette( { scheme: 'munin' } );
+cpipercentagelabels = [{"color": "rgb(0,0,255)", "name": "imbalance-end"}];
+palette = new Rickshaw.Color.Palette( { scheme: 'munin' } );
+cpipercentagesimplifiedlabels = [{"color": "rgb(255,0,0)", "name": "compute"}, {"color": "rgb(255,255,0)", "name": "branch"}, {"color": "rgb(0,255,0)", "name": "memory"}, {"color": "rgb(0,0,255)", "name": "synchronize"}];
+palette = new Rickshaw.Color.Palette( { scheme: 'munin' } );
+cpificlabels = '';
+palette = new Rickshaw.Color.Palette( { scheme: 'munin' } );
+simplelabels = [{"color": "rgb(255,0,0)", "name": "compute"}, {"color": "rgb(255,255,0)", "name": "branch"}, {"color": "rgb(0,255,0)", "name": "memory"}, {"color": "rgb(0,0,255)", "name": "synchronize"}];

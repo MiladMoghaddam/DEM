@@ -1,0 +1,4 @@
+Core	Interval	Measurments	Predicted	Error %	Core	Interval	Measurments	Predicted	Error %	Core	Interval	Measurments	Predicted	Error %	Core	Interval	Measurments	Predicted	Error %	
+0	0	17	17	0	1	0	0	0	-nan	2	0	0	0	-nan	3	0	0	0	-nan	
+0	1	2555	2.33833e-310	1	1	1	909	2.33833e-310	1	2	1	928	2.33833e-310	1	3	1	791	2.33833e-310	1	
+0	2	7980	2182.4	0.726517	1	2	9153	776.438	0.915171	2	2	8935	792.667	0.911285	3	2	14288	675.646	0.952712	

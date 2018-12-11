@@ -1,0 +1,457 @@
+"""
+Make energy available as a statistic by running a partial McPAT on every statistics snapshot save
+
+Works by registering a PRE_STAT_WRITE hook, which, before a stats snapshot write is triggered:
+- Writes the current statistics to the database using the energystats-temp prefix
+- Calls McPAT on the partial period (last-snapshot, energystats-temp)
+- Processes the McPAT results, making them available through custom-callback statistics
+- Finally the actual snapshot is written, including updated values for all energy counters
+"""
+
+import sys, os, sim
+
+
+def build_dvfs_table(tech):
+  # Build a table of (frequency, voltage) pairs.
+  # Frequencies should be from high to low, and end with zero (or the lowest possible frequency)
+  if tech == 22:
+    return [ (2000, 1.0), (1800, 0.9), (1500, 0.8), (1000, 0.7), (0, 0.6) ]
+  elif tech == 45:
+    return [ (2000, 1.2), (1800, 1.1), (1500, 1.0), (1000, 0.9), (0, 0.8) ]
+  else:
+    raise ValueError('No DVFS table available for %d nm technology node' % tech)
+
+
+class Power:
+  def __init__(self, static, dynamic):
+    self.s = static
+    self.d = dynamic
+  def __add__(self, v):
+    return Power(self.s + v.s, self.d + v.d)
+  def __sub__(self, v):
+    return Power(self.s - v.s, self.d - v.d)
+
+
+class EnergyStats:
+  def setup(self, args):
+    args = dict(enumerate((args or '').split(':')))
+    interval_ns = long(args.get(0, None) or 1000000) # Default power update every 1 ms
+    sim.util.Every(interval_ns * sim.util.Time.NS, self.periodic, roi_only = True)
+    self.dvfs_table = build_dvfs_table(int(sim.config.get('power/technology_node')))
+    #
+    self.period = 0
+    self.name_last = None
+    self.time_last_power = 0
+    self.time_last_energy = 0
+    self.in_stats_write = False
+    self.power = {}
+    self.energy = {}
+    self.effective_F_V2 = []
+    self.effective_V2 = []
+    self.dynamic_workload = []
+    for core in range(sim.config.ncores):
+        self.effective_F_V2.append(0.0)
+        self.effective_V2.append(0.0)
+        self.dynamic_workload.append(0.0)
+
+    for metric in ('energy-static', 'energy-dynamic'):
+      for core in range(sim.config.ncores):
+        sim.stats.register('core', core, metric, self.get_stat)
+        sim.stats.register('L1-I', core, metric, self.get_stat)
+        sim.stats.register('L1-D', core, metric, self.get_stat)
+        sim.stats.register('L2', core, metric, self.get_stat)
+      #sim.stats.register_per_thread('core-'+metric, 'core', metric)
+      #sim.stats.register_per_thread('L1-I-'+metric, 'L1-I', metric)
+      #sim.stats.register_per_thread('L1-D-'+metric, 'L1-D', metric)
+      #sim.stats.register_per_thread('L2-'+metric, 'L2', metric)
+      sim.stats.register('processor', 0, metric, self.get_stat)
+      sim.stats.register('dram', 0, metric, self.get_stat)
+    ######### "workload.xls"
+    self.filename_workload="Workload.xls"
+    self.Wfile_workload = file(os.path.join(sim.config.output_dir, self.filename_workload), 'w')
+    self.Wfile_workload.write("%d\tcore"%sim.config.ncores)
+    for core in range(sim.config.ncores):
+        self.Wfile_workload.write("\t%d"%core)
+    ######### "PowerEnergyStat.xls"
+    self.filename_SummaryStat="SummarryEnegry.txt"
+    self.filename_PowerEnergyStat="PowerEnergyStat.xls"
+    self.Wfile_PowerEnergyStat = file(os.path.join(sim.config.output_dir, self.filename_PowerEnergyStat), 'w')
+	##V/F level
+    self.Wfile_PowerEnergyStat.write("V/F Level")
+    for core in range(sim.config.ncores):
+        self.Wfile_PowerEnergyStat.write("\tcore-%d\t"%core)
+    ##Power
+    self.Wfile_PowerEnergyStat.write("\tpower\t%d\t"%sim.config.ncores)
+    for core in range(sim.config.ncores):
+        self.Wfile_PowerEnergyStat.write("\tcore-%d"%core)
+    self.Wfile_PowerEnergyStat.write("\t")
+    for core in range(sim.config.ncores):
+        self.Wfile_PowerEnergyStat.write("\tcore-%d"%core)
+    self.Wfile_PowerEnergyStat.write("\t")
+    for core in range(sim.config.ncores):
+        self.Wfile_PowerEnergyStat.write("\tcore-%d"%core)
+    self.Wfile_PowerEnergyStat.write("\t\tProcessor")  
+    self.Wfile_PowerEnergyStat.write("\t\tProcessor") 
+    self.Wfile_PowerEnergyStat.write("\t\tProcessor") 
+    ##Energy
+    self.Wfile_PowerEnergyStat.write("\tEnergy\t%d\t"%sim.config.ncores)
+    for core in range(sim.config.ncores):
+        self.Wfile_PowerEnergyStat.write("\tcore-%d"%core)
+    self.Wfile_PowerEnergyStat.write("\t")
+    for core in range(sim.config.ncores):
+        self.Wfile_PowerEnergyStat.write("\tcore-%d"%core)
+    self.Wfile_PowerEnergyStat.write("\t")
+    for core in range(sim.config.ncores):
+        self.Wfile_PowerEnergyStat.write("\tcore-%d"%core)
+    self.Wfile_PowerEnergyStat.write("\t\tProcessor")  
+    self.Wfile_PowerEnergyStat.write("\t\tProcessor")
+    self.Wfile_PowerEnergyStat.write("\t\tProcessor")
+    ##C_Energy
+    self.Wfile_PowerEnergyStat.write("\tC-Energy\t%d\t"%sim.config.ncores)
+    for core in range(sim.config.ncores):
+        self.Wfile_PowerEnergyStat.write("\tcore-%d"%core)
+    self.Wfile_PowerEnergyStat.write("\t")
+    for core in range(sim.config.ncores):
+        self.Wfile_PowerEnergyStat.write("\tcore-%d"%core)
+    self.Wfile_PowerEnergyStat.write("\t")
+    for core in range(sim.config.ncores):
+        self.Wfile_PowerEnergyStat.write("\tcore-%d"%core)
+    self.Wfile_PowerEnergyStat.write("\t\tProcessor")  
+    self.Wfile_PowerEnergyStat.write("\t\tProcessor")
+    self.Wfile_PowerEnergyStat.write("\t\tProcessor")
+
+
+    self.Wfile_PowerEnergyStat.close()
+
+    ######
+
+  def periodic(self, time, time_delta):
+    self.update()
+
+  def hook_pre_stat_write(self, prefix):
+    if not self.in_stats_write:
+      self.update()
+
+  def hook_sim_end(self):
+    if self.name_last:
+      sim.util.db_delete(self.name_last, True)
+
+  def update(self):      
+    self.Wfile_PowerEnergyStat = file(os.path.join(sim.config.output_dir, self.filename_PowerEnergyStat), 'a')
+    if sim.stats.time() == self.time_last_power:
+      # Time did not advance: don't recompute
+      return
+    #if not self.power or (sim.stats.time() - self.time_last_power >= 10 * sim.util.Time.US):
+    if (1):
+      # Time advanced significantly, or no power result yet: compute power
+      #   Save snapshot
+      current = 'energystats-temp%s' % ('B' if self.name_last and self.name_last[-1] == 'A' else 'A')
+      self.in_stats_write = True
+      sim.stats.write(current)
+      self.in_stats_write = False
+      #   If we also have a previous snapshot: update power
+
+      if self.name_last:      
+        self.Wfile_PowerEnergyStat.write('\n') 
+        self.CoreCounter=0
+        power = self.run_power(self.name_last, current)        
+        self.Wfile_PowerEnergyStat.write('\t') 
+        self.update_power(power)
+      #   Clean up previous last
+      if self.name_last:
+        sim.util.db_delete(self.name_last)
+      #   Update new last
+      self.name_last = current
+      self.time_last_power = sim.stats.time()
+    # Increment energy
+    self.update_energy()
+    self.period+=1
+    self.Wfile_PowerEnergyStat.close()
+
+  def get_stat(self, objectName, index, metricName):
+    if not self.in_stats_write:
+      self.update()
+    return self.energy.get((objectName, index, metricName), 0L)
+
+  def update_power(self, power):
+    def get_power(component, prefix = ''):
+      return Power(component[prefix + 'Subthreshold Leakage'] + component[prefix + 'Gate Leakage'], component[prefix + 'Runtime Dynamic'])
+    for core in range(sim.config.ncores):
+      self.power[('L1-I', core)] = get_power(power['Core'][core], 'Instruction Fetch Unit/Instruction Cache/')
+      
+      self.power[('L1-D', core)] = get_power(power['Core'][core], 'Load Store Unit/Data Cache/')
+      self.power[('L2',   core)] = get_power(power['Core'][core], 'L2/')
+      self.power[('core', core)] = get_power(power['Core'][core]) - (self.power[('L1-I', core)] + self.power[('L1-D', core)] + self.power[('L2', core)])
+
+      print 'power.core[%d] = %s'%(core,vars(self.power[('core', core)]))
+
+    self.power[('processor', 0)] = get_power(power['Processor'])
+    self.power[('dram', 0)] = get_power(power['DRAM'])
+    print 'power.processor = %s'%vars(self.power[('processor', 0)])
+    print 'power.dram = %s'%vars(self.power[('dram', 0)])
+    ########################PowerEnergyStat####################
+    ###self.Wfile_PowerEnergyStat = file(os.path.join(sim.config.output_dir, self.filename_PowerEnergyStat), 'a')
+    #self.Wfile_PowerEnergyStat.write('\n')
+    '''
+    self.Wfile_PowerEnergyStat.write('\t%d\t'%(self.period))
+    self.Wfile_PowerEnergyStat.write('P-Dynamic')
+    for core in range(sim.config.ncores):
+        self.Wfile_PowerEnergyStat.write("\t%s"%self.power[('core', core)].d)
+    self.Wfile_PowerEnergyStat.write('\tP-Static')
+    for core in range(sim.config.ncores):
+        self.Wfile_PowerEnergyStat.write("\t%s"%self.power[('core', core)].s)
+    self.Wfile_PowerEnergyStat.write('\tD+S')
+    for core in range(sim.config.ncores):
+        self.Wfile_PowerEnergyStat.write("\t%s"%((self.power[('core', core)].d)+(self.power[('core', core)].s)))
+
+    self.Wfile_PowerEnergyStat.write('\tP-Dynamic\t%s'%self.power[('processor', 0)].d)
+    self.Wfile_PowerEnergyStat.write('\tP-Static\t%s'%self.power[('processor', 0)].s)
+    self.Wfile_PowerEnergyStat.write('\tD+S\t%s'%(self.power[('processor', 0)].d+self.power[('processor', 0)].s))
+    self.Wfile_PowerEnergyStat.write('\t')
+    
+
+    for core in range(sim.config.ncores):
+        #print 'core:%d - F_V2= %f'%(core,self.effective_F_V2[core])
+        self.dynamic_workload[core]=float(self.power[('core', core)].d)/float(self.effective_F_V2[core])
+    '''
+    ######################################################
+    ###self.Wfile_PowerEnergyStat.close()
+
+  def update_energy(self):
+    self.processor_energy_static = 0.0;
+    if self.power and sim.stats.time() > self.time_last_energy:
+      time_delta = sim.stats.time() - self.time_last_energy
+      for (component, core), power in self.power.items(): #current energy static or dynamic = long(time_delta * power.s or d)
+        #print self.energy.get(('processor', 0, 'energy-static'), 0)
+        #print self.energy.get((component, core, 'energy-static'), 0)
+        self.energy[(component, core, 'energy-static')] = self.energy.get((component, core, 'energy-static'), 0) + long(time_delta * power.s)
+        self.energy[(component, core, 'energy-dynamic')] = self.energy.get((component, core, 'energy-dynamic'), 0) + long(time_delta * power.d)
+        #print 'energy-static[%s][%d]=%s'%(component,core,(self.energy[(component, core, 'energy-static')]))
+        #print 'energy-dynamic[%s][%d]=%s'%(component,core,(self.energy[(component, core, 'energy-dynamic')])
+
+      for core in range(sim.config.ncores):
+          print 'current core.energy-static[%d]= %s'%(core,long(time_delta * self.power[('core', core)].s))
+      for core in range(sim.config.ncores):
+          print 'total core.energy-static[%d]= %s'%(core,(self.energy[('core', core, 'energy-static')]))
+
+
+
+      for core in range(sim.config.ncores):
+          print 'current core.energy-dynamic[%d]= %s'%(core,long(time_delta * self.power[('core', core)].d))
+      for core in range(sim.config.ncores):
+          print 'total core.energy-dynamic[%d]= %s'%(core,(self.energy[('core', core, 'energy-dynamic')]))
+
+
+      print 'current processor.energy-static= %s'%long(time_delta * self.power[('processor', 0)].s)
+      print 'total processor.energy-static= %s'%(self.energy[('core', core, 'energy-static')])
+
+      print 'current processor.energy-dynamic= %s'%long(time_delta * self.power[('processor', 0)].d)
+      print 'total processor.energy-dynamic= %s'%(self.energy[('core', core, 'energy-dynamic')])
+
+      ######################################################
+      ########################EnergyStat####################
+      ##self.Wfile_PowerEnergyStat = file(os.path.join(sim.config.output_dir, self.filename_PowerEnergyStat), 'a')
+      ##self.Wfile_PowerEnergyStat.write('\n')
+      self.Wfile_PowerEnergyStat.write('\t%d\t'%(self.period))
+      self.Wfile_PowerEnergyStat.write('P-Dynamic')
+      for core in range(sim.config.ncores):
+          self.Wfile_PowerEnergyStat.write("\t%s"%self.power[('core', core)].d)
+      self.Wfile_PowerEnergyStat.write('\tP-Static')
+      for core in range(sim.config.ncores):
+          self.Wfile_PowerEnergyStat.write("\t%s"%self.power[('core', core)].s)
+      self.Wfile_PowerEnergyStat.write('\tD+S')
+      for core in range(sim.config.ncores):
+          self.Wfile_PowerEnergyStat.write("\t%s"%((self.power[('core', core)].d)+(self.power[('core', core)].s)))
+
+      self.Wfile_PowerEnergyStat.write('\tP-Dynamic\t%s'%self.power[('processor', 0)].d)
+      self.Wfile_PowerEnergyStat.write('\tP-Static\t%s'%self.power[('processor', 0)].s)
+      self.Wfile_PowerEnergyStat.write('\tD+S\t%s'%(self.power[('processor', 0)].d+self.power[('processor', 0)].s))
+      self.Wfile_PowerEnergyStat.write('\t')
+    
+
+      for core in range(sim.config.ncores):
+          #print 'core:%d - F_V2= %f'%(core,self.effective_F_V2[core])
+          #self.dynamic_workload[core]=float(self.power[('core', core)].d)/float(self.effective_F_V2[core])     
+          self.dynamic_workload[core]=float(self.power[('core', core)].d)/float(self.effective_V2[core])     
+      ###########
+      self.Wfile_PowerEnergyStat.write('\t%d\t'%(self.period))
+      self.Wfile_PowerEnergyStat.write('E-Dynamic')
+      for core in range(sim.config.ncores):
+          self.Wfile_PowerEnergyStat.write("\t%s"%long(time_delta * self.power[('core', core)].d))
+      self.Wfile_PowerEnergyStat.write('\tE-Static')
+      for core in range(sim.config.ncores):
+          self.Wfile_PowerEnergyStat.write("\t%s"%long(time_delta * self.power[('core', core)].s))
+      self.Wfile_PowerEnergyStat.write('\tD+S')
+      for core in range(sim.config.ncores):
+          self.Wfile_PowerEnergyStat.write("\t%s"%(long(time_delta * self.power[('core', core)].d)+long(time_delta * self.power[('core', core)].s)))
+
+      self.Wfile_PowerEnergyStat.write('\tE-Dynamic\t%s'%long(time_delta * self.power[('processor', 0)].d))
+      self.Wfile_PowerEnergyStat.write('\tE-Static\t%s'%long(time_delta * self.power[('processor', 0)].s))
+      self.Wfile_PowerEnergyStat.write('\tD+S\t%s'%(long(time_delta * self.power[('processor', 0)].d)+long(time_delta * self.power[('processor', 0)].s)))
+      self.Wfile_PowerEnergyStat.write('\t')
+      ##cumulative##
+      self.Wfile_PowerEnergyStat.write('\t%d\t'%(self.period))
+      self.Wfile_PowerEnergyStat.write('CE-Dynamic')
+      for core in range(sim.config.ncores):
+          self.Wfile_PowerEnergyStat.write("\t%s"%self.energy[('core', core, 'energy-dynamic')])
+      self.Wfile_PowerEnergyStat.write('\tCE-Static')
+      for core in range(sim.config.ncores):
+          self.Wfile_PowerEnergyStat.write("\t%s"%self.energy[('core', core, 'energy-dynamic')])
+      self.Wfile_PowerEnergyStat.write('\tD+S')
+      for core in range(sim.config.ncores):
+          self.Wfile_PowerEnergyStat.write("\t%s"%(self.energy[('core', core, 'energy-dynamic')]+self.energy[('core', core, 'energy-static')]))
+
+      self.Wfile_PowerEnergyStat.write('\tCE-Dynamic\t%s'%self.energy[('core', core, 'energy-dynamic')])
+      self.Wfile_PowerEnergyStat.write('\tCE-Static\t%s'%self.energy[('core', core, 'energy-static')]) 
+      self.Wfile_PowerEnergyStat.write('\tD+S\t%s'%(self.energy[('core', core, 'energy-dynamic')]+self.energy[('core', core, 'energy-static')]) )     
+      self.Wfile_PowerEnergyStat.write('\t')
+      self.Wfile_PowerEnergyStat.write('\t')
+      self.Wfile_PowerEnergyStat.write('\t')
+
+      #powers
+      self.Wfile_PowerEnergyStat.write('\t%d\t'%(self.period))
+      self.Wfile_PowerEnergyStat.write('P-Dynamic')
+      for core in range(sim.config.ncores):
+          self.Wfile_PowerEnergyStat.write("\tcore-%s\t%s"%(core,self.power[('core', core)].d))
+          self.Wfile_PowerEnergyStat.write("\t%s"%self.power[('L1-I', core)].d)
+          self.Wfile_PowerEnergyStat.write("\t%s"%self.power[('L1-D', core)].d)
+          self.Wfile_PowerEnergyStat.write("\t%s"%self.power[('L2', core)].d)
+
+      self.Wfile_PowerEnergyStat.write('\t\tP-Static')
+      for core in range(sim.config.ncores):
+          self.Wfile_PowerEnergyStat.write("\tcore%s\t%s"%(core,self.power[('core', core)].s))
+          self.Wfile_PowerEnergyStat.write("\tL1-I\t%s"%self.power[('L1-I', core)].s)
+          self.Wfile_PowerEnergyStat.write("\tL1-D\t%s"%self.power[('L1-D', core)].s)
+          self.Wfile_PowerEnergyStat.write("\tL2\t%s"%self.power[('L2', core)].s)
+
+      self.Wfile_PowerEnergyStat.write('\t\tD+S')
+      for core in range(sim.config.ncores):
+          self.Wfile_PowerEnergyStat.write("\tcore-%s\t%s"%(core,(self.power[('core', core)].d)+(self.power[('core', core)].s)))
+          self.Wfile_PowerEnergyStat.write("\t%s"%((self.power[('L1-I', core)].d)+(self.power[('L1-I', core)].s)))
+          self.Wfile_PowerEnergyStat.write("\t%s"%((self.power[('L1-D', core)].d)+(self.power[('L1-D', core)].s)))
+          self.Wfile_PowerEnergyStat.write("\t%s"%((self.power[('L2', core)].d)+(self.power[('L2', core)].s)))
+
+      #for l3cache in range(sim.config.ncores/4):#based on configuration file
+      #    self.Wfile_PowerEnergyStat.write('\tP-Dynamic\tL3\t%s'%self.power[('L3', l3cache)].d)
+      #    self.Wfile_PowerEnergyStat.write('\tP-Static\tL3\t%s'%self.power[('L3',l3cache)].s)
+      #    self.Wfile_PowerEnergyStat.write('\tD+S\tL3\t%s'%(self.power[('L3', l3cache)].d+self.power[('L3',l3cache)].s))
+      #    self.Wfile_PowerEnergyStat.write('\t')
+
+
+
+      self.Wfile_PowerEnergyStat.write('\tP-Dynamic\tdram\t%s'%self.power[('dram', 0)].d)
+      self.Wfile_PowerEnergyStat.write('\tP-Static\tdram\t%s'%self.power[('dram', 0)].s)
+      self.Wfile_PowerEnergyStat.write('\tD+S\tdram\t%s'%(self.power[('dram', 0)].d+self.power[('dram', 0)].s))
+      self.Wfile_PowerEnergyStat.write('\t')
+      self.Wfile_PowerEnergyStat.write('\t')
+      
+
+
+      self.total_core_power=0.0
+      self.total_l1i_power=0.0
+      self.total_l1d_power=0.0
+      self.total_l2_power=0.0
+
+      for core in range(sim.config.ncores):
+         self.total_core_power += (self.power[('core', core)].d)+(self.power[('core', core)].s)
+         self.total_l1i_power += (self.power[('L1-I', core)].d)+(self.power[('L1-I', core)].s)
+         self.total_l1d_power += (self.power[('L1-D', core)].d)+(self.power[('L1-D', core)].s)
+         self.total_l2_power += (self.power[('L2', core)].d)+(self.power[('L2', core)].s)
+
+      self.total_component_power = self.total_core_power + self.total_l1i_power + self.total_l1d_power + self.total_l2_power + (self.power[('dram', 0)].d+self.power[('dram', 0)].s)
+
+      self.Wfile_PowerEnergyStat.write('\tsum-cores\t%s'%self.total_core_power)
+      self.Wfile_PowerEnergyStat.write('\tsum-L1-I\t%s'%self.total_l1i_power)
+      self.Wfile_PowerEnergyStat.write('\tsum-L1-D\t%s'%self.total_l1d_power)
+      self.Wfile_PowerEnergyStat.write('\tsum-L2\t%s'%self.total_l2_power)
+      self.Wfile_PowerEnergyStat.write('\tsum\t%s'%self.total_component_power)
+
+
+      self.Wfile_PowerEnergyStat.write('\t')
+      self.Wfile_PowerEnergyStat.write('\t')
+      self.Wfile_PowerEnergyStat.write('\tP-Dynamic\t%s'%self.power[('processor', 0)].d)
+      self.Wfile_PowerEnergyStat.write('\tP-Static\t%s'%self.power[('processor', 0)].s)
+      self.Wfile_PowerEnergyStat.write('\tD+S\t%s'%(self.power[('processor', 0)].d+self.power[('processor', 0)].s))
+      self.Wfile_PowerEnergyStat.write('\t')
+
+
+      self.Wfile_SummaryStat = file(os.path.join(sim.config.output_dir, self.filename_SummaryStat), 'w')      
+      #self.Wfile_summary.write('\tP-Dynamic\t%s'%self.power[('processor', 0)].d)
+      #self.Wfile_summary.write('\tP-Static\t%s'%self.power[('processor', 0)].s)
+      #self.Wfile_summary.write('\tD+S\t%s'%(self.power[('processor', 0)].d+self.power[('processor', 0)].s))
+      #self.Wfile_summary.write('\t')
+      self.Wfile_SummaryStat.write('\tCE-Dynamic\t%s'%self.energy[('core', core, 'energy-dynamic')])
+      self.Wfile_SummaryStat.write('\tCE-Static\t%s'%self.energy[('core', core, 'energy-static')]) 
+      self.Wfile_SummaryStat.write('\tD+S\t%s'%(self.energy[('core', core, 'energy-dynamic')]+self.energy[('core', core, 'energy-static')]) )     
+      self.Wfile_SummaryStat.close()
+
+      ######################################################
+      #self.Wfile_PowerEnergyStat.write('F*V^2')
+      #for core in range(sim.config.ncores):
+      #    self.Wfile_PowerEnergyStat.write("\t%s"%self.effective_F_V2[core]) 
+      #self.Wfile_PowerEnergyStat.write('\tworkload')
+      #for core in range(sim.config.ncores):
+      #    self.Wfile_PowerEnergyStat.write("\t%s"%self.dynamic_workload[core]) 
+     
+      #### workload
+      #self.Wfile_workload = file(os.path.join(sim.config.output_dir, self.filename_workload), 'a')
+      #self.Wfile_workload.write('\n')
+      #self.Wfile_workload.write('%d\t'%(self.period))
+      #self.Wfile_workload.write('Workload')
+      #for core in range(sim.config.ncores):
+      #    self.Wfile_workload.write("\t%s"%self.dynamic_workload[core])
+      #self.Wfile_workload_.close()
+ 
+
+
+
+      self.time_last_energy = sim.stats.time()      
+      #raw_input()
+
+  def get_vdd_from_freq(self, f):
+    # Assume self.dvfs_table is sorted from highest frequency to lowest
+    for _f, _v in self.dvfs_table:
+      if f >= _f:
+        print '(Freq,Voltage)=(%d , %.2f)'%(f,_v)
+        self.Wfile_PowerEnergyStat.write('\t(%d , %0.2f)\t%f'%(f,_v,f*_v*_v))
+        self.effective_F_V2[self.CoreCounter]=f*_v*_v 
+        self.effective_V2[self.CoreCounter]=_v*_v
+        self.CoreCounter+=1
+        #print 'core:%d - F_V2= %s'%(self.CoreCounter,self.effective_F_V2[self.CoreCounter])
+        return _v
+    assert ValueError('Could not find a Vdd for invalid frequency %f' % f)
+
+  def gen_config(self, outputbase):
+    freq = [ sim.dvfs.get_frequency(core) for core in range(sim.config.ncores) ]
+    vdd = [ self.get_vdd_from_freq(f) for f in freq ]
+    configfile = outputbase+'.cfg'
+    cfg = open(configfile, 'w')
+    cfg.write('''
+[perf_model/core]
+frequency[] = %s
+[power]
+vdd[] = %s
+    ''' % (','.join(map(lambda f: '%f' % (f / 1000.), freq)), ','.join(map(str, vdd))))
+    cfg.close()
+    return configfile
+
+  def run_power(self, name0, name1):
+    outputbase = os.path.join(sim.config.output_dir, 'energystats-temp')
+
+    configfile = self.gen_config(outputbase)
+
+    os.system('unset PYTHONHOME; %s -d %s -o %s -c %s --partial=%s:%s --no-graph --no-text' % (
+      os.path.join(os.getenv('SNIPER_ROOT'), 'tools/mcpat.py'),
+      sim.config.output_dir,
+      outputbase,
+      configfile,
+      name0, name1
+    ))
+
+    result = {}
+    execfile(outputbase + '.py', {}, result)
+    return result['power']
+
+# All scripts execute in global scope, so other scripts will be able to call energystats.update()
+energystats = EnergyStats()
+sim.util.register(energystats)
