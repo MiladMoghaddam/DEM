@@ -9,9 +9,9 @@ Developed by:
 This work is implemented with sniper simulator (V6.1).
 Please download and install sniper and then add the attached directories to your workspace inside the ./sniper directory
 
-#################################################################################################################
-#####################################   Kalman filtering based technique   ###################################### 
-#################################################################################################################
+---------------------------------------------------------------------------------------------------------------
+   Kalman filtering based technique   
+---------------------------------------------------------------------------------------------------------------
 For more information please take a look at the following paper:
 (Please cite it if you use it in your work)
 
@@ -37,9 +37,9 @@ Steps:
 
    Note: The Kalman source code was downloaded from https://github.com/hmartiro/ and modified for our purpose.
          Check ./sniper/kalman for installation instruction.
-#################################################################################################################
- ####################################          DNN based technique         ######################################
-#################################################################################################################
+---------------------------------------------------------------------------------------------------------------
+   DNN based technique         
+---------------------------------------------------------------------------------------------------------------
 For more information please take a look at the following paper:
 (Please cite it if you use it in your work)
 
@@ -91,9 +91,9 @@ Steps:
        -p splash2-barnes -i small-16 -n 16
 
 
-###############################################################################################################
-####################################         LSTM based technique          ####################################
-###############################################################################################################
+---------------------------------------------------------------------------------------------------------------
+   LSTM based technique      
+---------------------------------------------------------------------------------------------------------------
 For more information please take a look at the following paper:
 (Please cite it if you use it in your work)
 
@@ -122,7 +122,7 @@ Steps:
        -senergystats:1000000  -g --perf_model/core/frequency=2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2 \
        -p splash2-barnes -i small-16 -n 16
  
-###############################################################################################################
+---------------------------------------------------------------------------------------------------------------
 #Note: in all the implementations you need to use the modified gen_simout.py and copy it in ./sniper/tools
 Please find it in ./sniper/scripts
 #Note: Please extract "libcarbon_sim.a.zip" inside the ./sniper/lib, before doing anything. I had to make compress
